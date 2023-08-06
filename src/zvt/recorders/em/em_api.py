@@ -255,6 +255,7 @@ def get_em_data(
     resp = requests.get(url)
     if resp.status_code == 200:
         json_result = resp.json()
+        resp.close()
         if json_result and json_result["result"]:
             data: list = json_result["result"]["data"]
             if fetch_all:
@@ -328,6 +329,7 @@ def get_kdata(entity_id, level=IntervalLevel.LEVEL_1DAY, adjust_type=AdjustType.
     resp = requests.get(url, headers=DEFAULT_HEADER)
     resp.raise_for_status()
     results = resp.json()
+    resp.close()
     data = results["data"]
 
     kdatas = []
@@ -399,6 +401,7 @@ def get_basic_info(entity_id):
     resp = requests.post(url=url, json=data, headers=DEFAULT_HEADER)
 
     resp.raise_for_status()
+    resp.close()
 
     return resp.json()["Result"][result_field]
 
@@ -409,6 +412,7 @@ def get_future_list():
     resp = requests.get(url, headers=DEFAULT_HEADER)
     resp.raise_for_status()
     result = json_callback_param(resp.text)
+    resp.close()
     # [['DCE', 'im'], ['SHFE', 'rbm'], ['SHFE', 'hcm'], ['SHFE', 'ssm'], ['CZCE', 'SFM'], ['CZCE', 'SMM'], ['SHFE', 'wrm'], ['SHFE', 'cum'], ['SHFE', 'alm'], ['SHFE', 'znm'], ['SHFE', 'pbm'], ['SHFE', 'nim'], ['SHFE', 'snm'], ['INE', 'bcm'], ['SHFE', 'aum'], ['SHFE', 'agm'], ['DCE', 'am'], ['DCE', 'bm'], ['DCE', 'ym'], ['DCE', 'mm'], ['CZCE', 'RSM'], ['CZCE', 'OIM'], ['CZCE', 'RMM'], ['DCE', 'pm'], ['DCE', 'cm'], ['DCE', 'csm'], ['DCE', 'jdm'], ['CZCE', 'CFM'], ['CZCE', 'CYM'], ['CZCE', 'SRM'], ['CZCE', 'APM'], ['CZCE', 'CJM'], ['CZCE', 'PKM'], ['CZCE', 'PMM'], ['CZCE', 'WHM'], ['DCE', 'rrm'], ['CZCE', 'JRM'], ['CZCE', 'RIM'], ['CZCE', 'LRM'], ['DCE', 'lhm'], ['INE', 'scm'], ['SHFE', 'fum'], ['DCE', 'pgm'], ['INE', 'lum'], ['SHFE', 'bum'], ['CZCE', 'MAM'], ['DCE', 'egm'], ['DCE', 'lm'], ['CZCE', 'TAM'], ['DCE', 'vm'], ['DCE', 'ppm'], ['DCE', 'ebm'], ['CZCE', 'SAM'], ['CZCE', 'FGM'], ['CZCE', 'URM'], ['SHFE', 'rum'], ['INE', 'nrm'], ['SHFE', 'spm'], ['DCE', 'fbm'], ['DCE', 'bbm'], ['CZCE', 'PFM'], ['DCE', 'jmm'], ['DCE', 'jm'], ['CZCE', 'ZCM'], ['8', '060120'], ['8', '040120'], ['8', '070120'], ['8', '110120'], ['8', '050120'], ['8', '130120']]
     futures = []
     for item in result["list"]:
@@ -513,6 +517,7 @@ def get_tradable_list(
         resp.raise_for_status()
 
         result = json_callback_param(resp.text)
+        resp.close()
         data = result["data"]["diff"]
         df = pd.DataFrame.from_records(data=data)
         if entity_type == TradableType.stock:
@@ -535,7 +540,7 @@ def get_tradable_list(
     return pd.concat(dfs)
 
 
-def get_news(entity_id, ps=200, index=1):
+def get_news(entity_id, ps=200, index=1, start_timestamp=None):
     sec_id = to_em_sec_id(entity_id=entity_id)
     url = f"https://np-listapi.eastmoney.com/comm/wap/getListInfo?cb=callback&client=wap&type=1&mTypeAndCode={sec_id}&pageSize={ps}&pageIndex={index}&callback=jQuery1830017478247906740352_{now_timestamp() - 1}&_={now_timestamp()}"
     resp = requests.get(url)
@@ -552,22 +557,27 @@ def get_news(entity_id, ps=200, index=1):
     # }
     if resp.status_code == 200:
         json_text = resp.text[resp.text.index("(") + 1 : resp.text.rindex(")")]
-        json_result = demjson3.decode(json_text)["data"]["list"]
-        if json_result:
-            json_result = [
-                {
-                    "id": f'{entity_id}_{item["Art_ShowTime"]}',
-                    "entity_id": entity_id,
-                    "timestamp": to_pd_timestamp(item["Art_ShowTime"]),
-                    "news_title": item["Art_Title"],
-                }
-                for item in json_result
-            ]
-            next_data = get_news(entity_id=entity_id, ps=ps, index=index + 1)
-            if next_data:
-                return json_result + next_data
-            else:
-                return json_result
+        if "list" in demjson3.decode(json_text)["data"]:
+            json_result = demjson3.decode(json_text)["data"]["list"]
+            resp.close()
+            if json_result:
+                news = [
+                    {
+                        "id": f'{entity_id}_{item["Art_ShowTime"]}',
+                        "entity_id": entity_id,
+                        "timestamp": to_pd_timestamp(item["Art_ShowTime"]),
+                        "news_title": item["Art_Title"],
+                    }
+                    for item in json_result
+                    if not start_timestamp or (to_pd_timestamp(item["Art_ShowTime"]) >= start_timestamp)
+                ]
+                if len(news) < len(json_result):
+                    return news
+                next_data = get_news(entity_id=entity_id, ps=ps, index=index + 1)
+                if next_data:
+                    return news + next_data
+                else:
+                    return news
 
 
 # utils to transform zvt entity to em entity
@@ -714,7 +724,11 @@ if __name__ == "__main__":
     # df = get_kdata(entity_id="future_dce_I", level="1d")
     # print(df)
     # df = get_dragon_and_tiger(code="000989", start_date="2018-10-31")
-    df = get_dragon_and_tiger_list(start_date="2022-04-25")
+    # df = get_dragon_and_tiger_list(start_date="2022-04-25")
+    df = get_tradable_list()
+    df_delist = df[df["name"].str.contains("退")]
+    print(df_delist[["id", "name"]].values.tolist())
+
     print(df)
 # the __all__ is generated
 __all__ = [
